@@ -57,6 +57,7 @@ export class EventsService {
           occurred_at: occurredAt,
         });
         const saved = await this.createRepo.save(ev);
+        this.logger.log(`CREATE event persisted id=${saved.id}`);
         return { ok: true, id: saved.id };
       }
 
@@ -71,6 +72,7 @@ export class EventsService {
           occurred_at: occurredAt,
         });
         const saved = await this.updateRepo.save(ev);
+        this.logger.log(`UPDATE event persisted id=${saved.id}`);
         return { ok: true, id: saved.id };
       }
 
@@ -84,6 +86,7 @@ export class EventsService {
           occurred_at: occurredAt,
         });
         const saved = await this.deleteRepo.save(ev);
+        this.logger.log(`DELETE event persisted id=${saved.id}`);
         return { ok: true, id: saved.id };
       }
 
@@ -98,6 +101,7 @@ export class EventsService {
           occurred_at: occurredAt,
         });
         const saved = await this.queryRepo.save(ev);
+        this.logger.log(`QUERY event persisted id=${saved.id}`);  
         return { ok: true, id: saved.id };
       }
 
