@@ -21,8 +21,9 @@ export class EventsService {
     private readonly queryRepo: Repository<QueryEventEntity>,
   ) {}
 
-  private normalizeDate(legacy?: string): Date {
+  private normalizeDate(legacy?: string | Date): Date {
     if (!legacy) return new Date();
+    if (legacy instanceof Date) return legacy;
     const parsed = new Date(legacy);
     return isNaN(parsed.getTime()) ? new Date() : parsed;
   }
@@ -96,25 +97,55 @@ export class EventsService {
   }
 
   async findAll(): Promise<object[]> {
-    // Incidencia perfectiva: agrega 4 tablas en memoria sin orden garantizado
-    const creates = await this.createRepo.find();
-    const updates = await this.updateRepo.find();
-    const deletes = await this.deleteRepo.find();
-    const queries = await this.queryRepo.find();
+    const orderByDate = { occurred_at: 'ASC' as const };
+    const [creates, updates, deletes, queries] = await Promise.all([
+      this.createRepo.find({ order: orderByDate }),
+      this.updateRepo.find({ order: orderByDate }),
+      this.deleteRepo.find({ order: orderByDate }),
+      this.queryRepo.find({ order: orderByDate }),
+    ]);
 
-    // Ordena lexicograficamente por strings de fecha heterogeneos (incorrecto)
-    const merged = [
-      ...creates.map((e) => ({ ...e, _table: 'create_events' })),
-      ...updates.map((e) => ({ ...e, _table: 'update_events' })),
-      ...deletes.map((e) => ({ ...e, _table: 'delete_events' })),
-      ...queries.map((e) => ({ ...e, _table: 'query_events' })),
+    type EventRow = Record<string, unknown> & {
+      _sortTime: number;
+      _table: string;
+      occurred_at?: Date | string;
+    };
+    const withTable = (
+      events: Array<{ occurred_at?: Date | string }>,
+      table: string,
+    ): EventRow[] =>
+      events.map((event) => ({
+        ...event,
+        _table: table,
+        _sortTime: this.normalizeDate(event.occurred_at).getTime(),
+      }));
+
+    const buckets = [
+      withTable(creates, 'create_events'),
+      withTable(updates, 'update_events'),
+      withTable(deletes, 'delete_events'),
+      withTable(queries, 'query_events'),
     ];
+    const indexes = buckets.map(() => 0);
+    const merged: object[] = [];
 
-    merged.sort((a, b) => {
-      const dateA = this.normalizeDate((a as any).occurred_at);
-      const dateB = this.normalizeDate((b as any).occurred_at);
-      return dateA.getTime() - dateB.getTime();
-    });
+    while (true) {
+      let nextBucket = -1;
+      let nextTime = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < buckets.length; i++) {
+        const candidate = buckets[i][indexes[i]];
+        if (candidate && candidate._sortTime < nextTime) {
+          nextBucket = i;
+          nextTime = candidate._sortTime;
+        }
+      }
+
+      if (nextBucket === -1) break;
+
+      const { _sortTime, ...event } = buckets[nextBucket][indexes[nextBucket]++];
+      merged.push(event);
+    }
 
     return merged;
   }
@@ -137,15 +168,48 @@ export class EventsService {
   }
 
   async getStats(): Promise<object> {
-    const createCount = await this.createRepo.count();
-    const updateCount = await this.updateRepo.count();
-    const deleteCount = await this.deleteRepo.count();
-    // Incidencia perfectiva: query_events no se incluye en el total
+    const lastEventQuery = (repo: Repository<{ occurred_at: Date }>) =>
+      repo
+        .createQueryBuilder('event')
+        .select('MAX(event.occurred_at)', 'lastEventAt')
+        .getRawOne<{ lastEventAt: string | null }>();
+    const [
+      createCount,
+      updateCount,
+      deleteCount,
+      queryCount,
+      createLast,
+      updateLast,
+      deleteLast,
+      queryLast,
+    ] = await Promise.all([
+      this.createRepo.count(),
+      this.updateRepo.count(),
+      this.deleteRepo.count(),
+      this.queryRepo.count(),
+      lastEventQuery(this.createRepo),
+      lastEventQuery(this.updateRepo),
+      lastEventQuery(this.deleteRepo),
+      lastEventQuery(this.queryRepo),
+    ]);
+    const lastEventTimes = [
+      createLast?.lastEventAt,
+      updateLast?.lastEventAt,
+      deleteLast?.lastEventAt,
+      queryLast?.lastEventAt,
+    ]
+      .filter((date): date is string => Boolean(date))
+      .map((date) => this.normalizeDate(date).getTime());
+
     return {
       create: createCount,
       update: updateCount,
       delete: deleteCount,
-      total: createCount + updateCount + deleteCount,
+      query: queryCount,
+      total: createCount + updateCount + deleteCount + queryCount,
+      lastEventAt: lastEventTimes.length
+        ? new Date(Math.max(...lastEventTimes)).toISOString()
+        : null,
     };
   }
 }
