@@ -23,6 +23,6 @@ export class DeleteEventEntity {
   @Column({ type: 'text', nullable: true })
   payload: string;
 
-  @Column({ nullable: true })
-  createdAt: string;
+  @Column({ type: 'datetime', nullable: true })
+  occurred_at: Date;
 }

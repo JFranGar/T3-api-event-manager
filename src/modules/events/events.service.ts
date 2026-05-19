@@ -21,11 +21,17 @@ export class EventsService {
     private readonly queryRepo: Repository<QueryEventEntity>,
   ) {}
 
+  private normalizeDate(legacy?: string): Date {
+    if (!legacy) return new Date();
+    const parsed = new Date(legacy);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+
   async registerEvent(dto: CreateEventDto): Promise<{ ok: boolean }> {
     const action = (dto.action ?? '').toUpperCase();
     const payloadStr = JSON.stringify(dto.payload ?? {});
     // Fecha guardada en formato local, no UTC (debilidad intencional)
-    const localDate = new Date().toLocaleString();
+    const occurredAt = new Date().toISOString();
 
     if (action === 'CREATE') {
       const ev = this.createRepo.create({
@@ -35,7 +41,7 @@ export class EventsService {
         title: dto.title,
         description: dto.description,
         payload: payloadStr,
-        recorded_at: localDate,
+        occurred_at: occurredAt,
       });
       await this.createRepo.save(ev);
       return { ok: true };
@@ -49,7 +55,7 @@ export class EventsService {
         title: dto.title,
         description: dto.description,
         payload: payloadStr,
-        timestamp: localDate,
+        occurred_at: occurredAt,
       });
       await this.updateRepo.save(ev);
       return { ok: true };
@@ -64,7 +70,7 @@ export class EventsService {
         action: dto.action,
         title: dto.title,
         payload: payloadStr,
-        createdAt: localDate,
+        occurred_at: occurredAt,
       });
       const saved = await this.deleteRepo.save(ev);
       this.logger.log(`DELETE event persisted id=${saved.id}`);
@@ -79,7 +85,7 @@ export class EventsService {
         title: dto.title,
         description: dto.description,
         payload: payloadStr,
-        event_date: localDate,
+        occurred_at: occurredAt,
       });
       await this.queryRepo.save(ev);
       return { ok: true };
@@ -105,13 +111,9 @@ export class EventsService {
     ];
 
     merged.sort((a, b) => {
-      const ra = a as unknown as Record<string, string>;
-      const rb = b as unknown as Record<string, string>;
-      const ta =
-        ra.recorded_at ?? ra.timestamp ?? ra.createdAt ?? ra.event_date ?? '';
-      const tb =
-        rb.recorded_at ?? rb.timestamp ?? rb.createdAt ?? rb.event_date ?? '';
-      return ta.localeCompare(tb);
+      const dateA = this.normalizeDate((a as any).occurred_at);
+      const dateB = this.normalizeDate((b as any).occurred_at);
+      return dateA.getTime() - dateB.getTime();
     });
 
     return merged;
