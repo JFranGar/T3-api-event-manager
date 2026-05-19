@@ -23,6 +23,6 @@ export class CreateEventEntity {
   @Column({ type: 'text', nullable: true })
   payload: string;
 
-  @Column({ nullable: true })
-  recorded_at: string;
+  @Column({ type: 'datetime', nullable: true })
+  occurred_at: Date;
 }

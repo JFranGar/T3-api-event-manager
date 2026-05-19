@@ -27,6 +27,6 @@ export class QueryEventEntity {
   @Column({ nullable: true })
   query_term: string;
 
-  @Column({ nullable: true })
-  event_date: string;
+  @Column({ type: 'datetime', nullable: true })
+  occurred_at: Date;
 }

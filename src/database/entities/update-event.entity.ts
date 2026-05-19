@@ -24,6 +24,6 @@ export class UpdateEventEntity {
   payload: string;
 
   // Inconsistencia intencional: timestamp guardado como texto local, no UTC
-  @Column({ nullable: true })
-  timestamp: string;
+  @Column({ type: 'datetime', nullable: true })
+  occurred_at: Date;
 }
