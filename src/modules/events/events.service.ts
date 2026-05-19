@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateEventDto } from './dto/create-event.dto';
@@ -9,6 +9,7 @@ import { QueryEventEntity } from '../../database/entities/query-event.entity';
 
 @Injectable()
 export class EventsService {
+  private readonly logger = new Logger(EventsService.name);
   constructor(
     @InjectRepository(CreateEventEntity)
     private readonly createRepo: Repository<CreateEventEntity>,
@@ -57,7 +58,7 @@ export class EventsService {
     if (action === 'DELETE') {
       // BUG INTENCIONAL (correctivo): se construye el objeto pero se devuelve
       // exito antes de persistirlo. El save nunca se ejecuta.
-      this.deleteRepo.create({
+      const ev = this.deleteRepo.create({
         source: dto.source,
         entity: dto.entity,
         action: dto.action,
@@ -65,6 +66,8 @@ export class EventsService {
         payload: payloadStr,
         createdAt: localDate,
       });
+      const saved = await this.deleteRepo.save(ev);
+      this.logger.log(`DELETE event persisted id=${saved.id}`);
       return { ok: true };
     }
 
@@ -81,8 +84,9 @@ export class EventsService {
       await this.queryRepo.save(ev);
       return { ok: true };
     }
-
-    return { ok: false };
+    throw new BadRequestException(
+      `Acción no soportada: "${dto.action}". Use CREATE | UPDATE | DELETE | QUERY.`,
+    );
   }
 
   async findAll(): Promise<object[]> {
