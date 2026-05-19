@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  PayloadTooLargeException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateEventDto } from './dto/create-event.dto';
@@ -10,6 +16,7 @@ import { QueryEventEntity } from '../../database/entities/query-event.entity';
 @Injectable()
 export class EventsService {
   private readonly logger = new Logger(EventsService.name);
+  private readonly maxPayloadBytes = 8 * 1024;
   constructor(
     @InjectRepository(CreateEventEntity)
     private readonly createRepo: Repository<CreateEventEntity>,
@@ -27,72 +34,79 @@ export class EventsService {
     return isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
-  async registerEvent(dto: CreateEventDto): Promise<{ ok: boolean }> {
+  async registerEvent(dto: CreateEventDto): Promise<{ ok: boolean; id: number }> {
     const action = (dto.action ?? '').toUpperCase();
     const payloadStr = JSON.stringify(dto.payload ?? {});
+    if (Buffer.byteLength(payloadStr, 'utf8') > this.maxPayloadBytes) {
+      throw new PayloadTooLargeException('payload supera 8KB');
+    }
+
     // Fecha guardada en formato local, no UTC (debilidad intencional)
     const occurredAt = new Date().toISOString();
 
-    if (action === 'CREATE') {
-      const ev = this.createRepo.create({
-        source: dto.source,
-        entity: dto.entity,
-        action: dto.action,
-        title: dto.title,
-        description: dto.description,
-        payload: payloadStr,
-        occurred_at: occurredAt,
-      });
-      await this.createRepo.save(ev);
-      return { ok: true };
-    }
+    try {
+      if (action === 'CREATE') {
+        const ev = this.createRepo.create({
+          source: dto.source,
+          entity: dto.entity,
+          action: dto.action,
+          title: dto.title,
+          description: dto.description,
+          payload: payloadStr,
+          occurred_at: occurredAt,
+        });
+        const saved = await this.createRepo.save(ev);
+        return { ok: true, id: saved.id };
+      }
 
-    if (action === 'UPDATE') {
-      const ev = this.updateRepo.create({
-        source: dto.source,
-        entity: dto.entity,
-        action: dto.action,
-        title: dto.title,
-        description: dto.description,
-        payload: payloadStr,
-        occurred_at: occurredAt,
-      });
-      await this.updateRepo.save(ev);
-      return { ok: true };
-    }
+      if (action === 'UPDATE') {
+        const ev = this.updateRepo.create({
+          source: dto.source,
+          entity: dto.entity,
+          action: dto.action,
+          title: dto.title,
+          description: dto.description,
+          payload: payloadStr,
+          occurred_at: occurredAt,
+        });
+        const saved = await this.updateRepo.save(ev);
+        return { ok: true, id: saved.id };
+      }
 
-    if (action === 'DELETE') {
-      // BUG INTENCIONAL (correctivo): se construye el objeto pero se devuelve
-      // exito antes de persistirlo. El save nunca se ejecuta.
-      const ev = this.deleteRepo.create({
-        source: dto.source,
-        entity: dto.entity,
-        action: dto.action,
-        title: dto.title,
-        payload: payloadStr,
-        occurred_at: occurredAt,
-      });
-      const saved = await this.deleteRepo.save(ev);
-      this.logger.log(`DELETE event persisted id=${saved.id}`);
-      return { ok: true };
-    }
+      if (action === 'DELETE') {
+        const ev = this.deleteRepo.create({
+          source: dto.source,
+          entity: dto.entity,
+          action: dto.action,
+          title: dto.title,
+          payload: payloadStr,
+          occurred_at: occurredAt,
+        });
+        const saved = await this.deleteRepo.save(ev);
+        return { ok: true, id: saved.id };
+      }
 
-    if (action === 'QUERY') {
-      const ev = this.queryRepo.create({
-        source: dto.source,
-        entity: dto.entity,
-        action: dto.action,
-        title: dto.title,
-        description: dto.description,
-        payload: payloadStr,
-        occurred_at: occurredAt,
-      });
-      await this.queryRepo.save(ev);
-      return { ok: true };
+      if (action === 'QUERY') {
+        const ev = this.queryRepo.create({
+          source: dto.source,
+          entity: dto.entity,
+          action: dto.action,
+          title: dto.title,
+          description: dto.description,
+          payload: payloadStr,
+          occurred_at: occurredAt,
+        });
+        const saved = await this.queryRepo.save(ev);
+        return { ok: true, id: saved.id };
+      }
+
+      throw new BadRequestException(
+        `Acción no soportada: "${dto.action}". Use CREATE | UPDATE | DELETE | QUERY.`,
+      );
+    } catch (err) {
+      this.logger.error(`Fallo al persistir ${dto.action}`, err as Error);
+      throw new InternalServerErrorException('No se pudo registrar el evento');
     }
-    throw new BadRequestException(
-      `Acción no soportada: "${dto.action}". Use CREATE | UPDATE | DELETE | QUERY.`,
-    );
   }
 
   async findAll(): Promise<object[]> {
@@ -128,12 +142,29 @@ export class EventsService {
   }
 
   async findByEntity(entity: string): Promise<object[]> {
-    // Incidencia preventiva: parametro entity usado directamente sin sanitizar
-    const creates = await this.createRepo.findBy({ entity });
-    const updates = await this.updateRepo.findBy({ entity });
-    const deletes = await this.deleteRepo.findBy({ entity });
-    const queries = await this.queryRepo.findBy({ entity });
+    const normalizedEntity = this.normalizeEntity(entity);
+    const creates = await this.createRepo.findBy({ entity: normalizedEntity });
+    const updates = await this.updateRepo.findBy({ entity: normalizedEntity });
+    const deletes = await this.deleteRepo.findBy({ entity: normalizedEntity });
+    const queries = await this.queryRepo.findBy({ entity: normalizedEntity });
     return [...creates, ...updates, ...deletes, ...queries];
+  }
+
+  private normalizeEntity(entity: string): string {
+    const normalizedEntity = entity.trim();
+    if (!normalizedEntity) {
+      throw new BadRequestException('entity es obligatorio');
+    }
+
+    if (normalizedEntity.length > 60) {
+      throw new BadRequestException('entity supera 60 caracteres');
+    }
+
+    if (/[\u0000-\u001f\u007f]/.test(normalizedEntity)) {
+      throw new BadRequestException('entity contiene caracteres no válidos');
+    }
+
+    return normalizedEntity;
   }
 
   async getStats(): Promise<object> {
